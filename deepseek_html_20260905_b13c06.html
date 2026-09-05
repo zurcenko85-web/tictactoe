@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Крестики-нолики по сети</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            background: #1e1e2f;
+            font-family: 'Segoe UI', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: #fff;
+        }
+        .container {
+            background: #2d2d44;
+            padding: 30px;
+            border-radius: 24px;
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+        }
+        h1 {
+            margin-bottom: 20px;
+            font-weight: 400;
+        }
+        .status {
+            font-size: 18px;
+            margin: 10px 0;
+            padding: 10px;
+            background: #3a3a55;
+            border-radius: 12px;
+        }
+        .board {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin: 20px 0;
+            aspect-ratio: 1 / 1;
+            max-width: 360px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        .cell {
+            background: #3a3a55;
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 48px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: 0.15s;
+            user-select: none;
+            aspect-ratio: 1 / 1;
+        }
+        .cell:hover:not(.disabled) {
+            background: #4a4a6a;
+        }
+        .cell.disabled {
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            justify-content: center;
+            margin: 16px 0;
+        }
+        .controls input {
+            padding: 10px 14px;
+            border-radius: 30px;
+            border: none;
+            background: #3a3a55;
+            color: #fff;
+            font-size: 16px;
+            flex: 1;
+            min-width: 150px;
+        }
+        .controls input::placeholder {
+            color: #aaa;
+        }
+        .btn {
+            padding: 10px 24px;
+            border: none;
+            border-radius: 30px;
+            font-size: 16px;
+            font-weight: 600;
+            background: #6c5ce7;
+            color: #fff;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .btn:hover {
+            background: #5a4bd1;
+            transform: scale(1.02);
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+        .btn-secondary {
+            background: #00b894;
+        }
+        .btn-secondary:hover {
+            background: #00a381;
+        }
+        .btn-danger {
+            background: #e17055;
+        }
+        .btn-danger:hover {
+            background: #d63031;
+        }
+        .peer-id {
+            background: #3a3a55;
+            padding: 10px;
+            border-radius: 12px;
+            margin: 10px 0;
+            word-break: break-all;
+            font-size: 14px;
+        }
+        .footer {
+            margin-top: 16px;
+            font-size: 14px;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>✖️ Крестики-нолики ➕</h1>
+    <div class="status" id="status">Ожидание подключения...</div>
+
+    <div class="board" id="board">
+        <!-- 9 клеток будут созданы JS -->
+    </div>
+
+    <div class="controls">
+        <button class="btn" id="createBtn">🎯 Создать игру</button>
+        <input type="text" id="peerInput" placeholder="Введите ID соперника">
+        <button class="btn btn-secondary" id="connectBtn">🔗 Подключиться</button>
+    </div>
+
+    <div class="peer-id" id="peerIdDisplay">Ваш ID: <span id="myPeerId">—</span></div>
+
+    <div class="controls">
+        <button class="btn btn-danger" id="resetBtn">🔄 Новая игра</button>
+    </div>
+    <div class="footer">Играйте по сети через PeerJS (WebRTC)</div>
+</div>
+
+<script>
+    (function() {
+        // --- DOM ---
+        const boardEl = document.getElementById('board');
+        const statusEl = document.getElementById('status');
+        const peerInput = document.getElementById('peerInput');
+        const createBtn = document.getElementById('createBtn');
+        const connectBtn = document.getElementById('connectBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const myPeerIdSpan = document.getElementById('myPeerId');
+
+        // --- Игровое состояние ---
+        let board = Array(9).fill(null);
+        let currentPlayer = 'X'; // X всегда начинает
+        let gameOver = false;
+        let mySymbol = null;     // 'X' или 'O'
+        let isMyTurn = false;
+        let peer = null;
+        let conn = null;
+        let roomId = null;
+
+        // --- Создание поля ---
+        function renderBoard() {
+            boardEl.innerHTML = '';
+            for (let i = 0; i < 9; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.dataset.index = i;
+                cell.textContent = board[i] || '';
+                if (gameOver || !isMyTurn || !conn || !mySymbol) {
+                    cell.classList.add('disabled');
+                }
+                cell.addEventListener('click', () => handleCellClick(i));
+                boardEl.appendChild(cell);
+            }
+        }
+
+        // --- Обработка клика по клетке ---
+        function handleCellClick(index) {
+            if (gameOver || !isMyTurn || !conn || !mySymbol) return;
+            if (board[index] !== null) return;
+
+            // Локально ставим свой символ
+            board[index] = mySymbol;
+            renderBoard();
+            // Проверка победы
+            if (checkWinner()) {
+                gameOver = true;
+                statusEl.textContent = `🏆 Вы победили!`;
+                sendGameState('win', { winner: mySymbol });
+                renderBoard();
+                return;
+            } else if (board.every(cell => cell !== null)) {
+                gameOver = true;
+                statusEl.textContent = `🤝 Ничья!`;
+                sendGameState('draw', {});
+                renderBoard();
+                return;
+            }
+
+            // Передаём ход сопернику
+            isMyTurn = false;
+            statusEl.textContent = 'Ожидание хода соперника...';
+            sendGameState('move', { index, symbol: mySymbol });
+            renderBoard();
+        }
+
+        // --- Отправка сообщения сопернику ---
+        function sendGameState(action, data) {
+            if (conn && conn.open) {
+                conn.send({ action, ...data });
+            }
+        }
+
+        // --- Получение сообщения от соперника ---
+        function handlePeerMessage(msg) {
+            if (!msg || typeof msg !== 'object') return;
+
+            switch (msg.action) {
+                case 'move':
+                    // Соперник сходил
+                    if (gameOver) break;
+                    const idx = msg.index;
+                    const sym = msg.symbol;
+                    if (board[idx] !== null) break;
+                    board[idx] = sym;
+                    renderBoard();
+                    if (checkWinner()) {
+                        gameOver = true;
+                        statusEl.textContent = `😞 Соперник победил!`;
+                        renderBoard();
+                        return;
+                    } else if (board.every(cell => cell !== null)) {
+                        gameOver = true;
+                        statusEl.textContent = `🤝 Ничья!`;
+                        renderBoard();
+                        return;
+                    }
+                    // Теперь наш ход
+                    isMyTurn = true;
+                    statusEl.textContent = 'Ваш ход!';
+                    renderBoard();
+                    break;
+
+                case 'win':
+                    gameOver = true;
+                    statusEl.textContent = `😞 Соперник победил!`;
+                    renderBoard();
+                    break;
+
+                case 'draw':
+                    gameOver = true;
+                    statusEl.textContent = `🤝 Ничья!`;
+                    renderBoard();
+                    break;
+
+                case 'reset':
+                    resetGame(false); // не отправлять повторно
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        // --- Проверка победы ---
+        function checkWinner() {
+            const lines = [
+                [0,1,2],[3,4,5],[6,7,8],
+                [0,3,6],[1,4,7],[2,5,8],
+                [0,4,8],[2,4,6]
+            ];
+            for (let line of lines) {
+                const [a,b,c] = line;
+                if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // --- Сброс игры ---
+        function resetGame(send = true) {
+            board = Array(9).fill(null);
+            gameOver = false;
+            currentPlayer = 'X';
+            // mySymbol остаётся прежним (если подключены)
+            // isMyTurn определяется заново: X всегда начинает
+            if (mySymbol === 'X') {
+                isMyTurn = true;
+                statusEl.textContent = 'Ваш ход!';
+            } else if (mySymbol === 'O') {
+                isMyTurn = false;
+                statusEl.textContent = 'Ожидание хода соперника...';
+            } else {
+                isMyTurn = false;
+                statusEl.textContent = 'Игра не начата';
+            }
+            renderBoard();
+            if (send && conn && conn.open) {
+                conn.send({ action: 'reset' });
+            }
+        }
+
+        // --- Настройка PeerJS ---
+        function initPeer() {
+            if (peer) {
+                peer.destroy();
+                peer = null;
+            }
+            peer = new Peer(undefined, {
+                // Можно указать свой сервер, но по умолчанию используем публичный
+            });
+
+            peer.on('open', (id) => {
+                myPeerIdSpan.textContent = id;
+                roomId = id;
+                statusEl.textContent = 'Ожидание подключения...';
+                createBtn.disabled = false;
+                connectBtn.disabled = false;
+            });
+
+            peer.on('connection', (incoming) => {
+                // Кто-то подключился к нам
+                if (conn) {
+                    // Уже есть соединение – отклоняем
+                    incoming.close();
+                    return;
+                }
+                conn = incoming;
+                setupConnection();
+                // Если мы создали игру, мы будем X
+                if (mySymbol === null) {
+                    mySymbol = 'X';
+                    isMyTurn = true;
+                    statusEl.textContent = 'Соперник подключился! Ваш ход (X)';
+                } else {
+                    // Если мы подключались, то мы уже O
+                    // но этот случай не должен наступить, т.к. мы не создаём входящие, если уже есть conn
+                }
+                renderBoard();
+            });
+
+            peer.on('error', (err) => {
+                console.error('Peer error:', err);
+                statusEl.textContent = 'Ошибка: ' + err.message;
+            });
+        }
+
+        // --- Настройка соединения ---
+        function setupConnection() {
+            conn.on('open', () => {
+                statusEl.textContent = 'Соединение установлено!';
+                // Если мы создали игру и у нас ещё нет символа, мы X
+                if (mySymbol === null) {
+                    mySymbol = 'X';
+                    isMyTurn = true;
+                    statusEl.textContent = 'Ваш ход (X)';
+                } else {
+                    // Если мы подключались, мы уже O, ждём ход
+                    isMyTurn = false;
+                    statusEl.textContent = 'Ожидание хода соперника...';
+                }
+                // Если игра ещё не начата (пустая доска), начинаем
+                if (board.every(cell => cell === null)) {
+                    // Ничего не делаем, просто ждём
+                }
+                renderBoard();
+            });
+
+            conn.on('data', (data) => {
+                handlePeerMessage(data);
+            });
+
+            conn.on('close', () => {
+                statusEl.textContent = 'Соединение потеряно';
+                conn = null;
+                mySymbol = null;
+                isMyTurn = false;
+                renderBoard();
+            });
+
+            // После установки соединения, если мы подключились, мы O
+            // Если мы создавали игру, мы уже X
+        }
+
+        // --- Создание игры (хост) ---
+        function createGame() {
+            if (conn) {
+                // Если уже есть соединение, разорвём
+                conn.close();
+                conn = null;
+            }
+            if (peer) {
+                peer.destroy();
+            }
+            mySymbol = null;
+            board = Array(9).fill(null);
+            gameOver = false;
+            isMyTurn = false;
+            renderBoard();
+            initPeer();
+            // После инициализации peer, когда будет open, мы получим ID
+            statusEl.textContent = 'Создание игры...';
+            createBtn.disabled = true;
+            connectBtn.disabled = true;
+            // Ожидаем событие open
+        }
+
+        // --- Подключение к игре (клиент) ---
+        function connectToGame(peerId) {
+            if (!peerId) {
+                alert('Введите ID соперника');
+                return;
+            }
+            if (conn) {
+                conn.close();
+                conn = null;
+            }
+            if (!peer) {
+                // Если peer не создан, создаём
+                initPeer();
+            }
+            // Подключаемся
+            const newConn = peer.connect(peerId, { reliable: true });
+            conn = newConn;
+            // Мы будем O
+            mySymbol = 'O';
+            isMyTurn = false;
+            statusEl.textContent = 'Подключение...';
+            setupConnection();
+            // После открытия conn, будет установлен статус
+            // Очищаем доску
+            board = Array(9).fill(null);
+            gameOver = false;
+            renderBoard();
+        }
+
+        // --- Инициализация ---
+        function init() {
+            // Создаём доску
+            renderBoard();
+            // Peer будет создан при создании игры или подключении
+            // Показываем статус
+            statusEl.textContent = 'Нажмите "Создать игру" или введите ID и подключитесь';
+            // Обработчики
+            createBtn.addEventListener('click', createGame);
+            connectBtn.addEventListener('click', () => {
+                const id = peerInput.value.trim();
+                connectToGame(id);
+            });
+            resetBtn.addEventListener('click', () => {
+                if (conn && conn.open) {
+                    resetGame(true);
+                } else {
+                    resetGame(false);
+                }
+            });
+            // Автоматически создаём peer, чтобы показать ID, если пользователь захочет поделиться
+            // Но чтобы не создавать лишних, сделаем по кнопке
+        }
+
+        init();
+    })();
+</script>
+</body>
+</html>
